@@ -125,6 +125,55 @@ export function findClosestPaletteColor(
 }
 
 
+/**
+ * 自动色阶：按每个通道 1% / 99% 分位把色阶拉伸到 0-255。
+ *
+ * 室内光线下拍的照片，主体像素常常整体偏灰偏暗（例如浅青色物体实际只有 RGB(150,155,152)）。
+ * 人眼会自动做色彩恒常性补偿，看到的是浅青；但逐像素映射只会忠实还原成灰珠子。
+ * 拉伸后主体固有色被还原，再映射才能得到接近肉眼所见的色号。
+ * strength 为 0-1 的混合强度，0 等于不处理。
+ */
+export function applyAutoLevels(imageData: ImageData, strength: number = 1): void {
+    const data = imageData.data;
+    const hist = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+    let count = 0;
+
+    for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] < 128) continue; // 与代表色提取一致，忽略透明像素
+        hist[0][data[i]]++;
+        hist[1][data[i + 1]]++;
+        hist[2][data[i + 2]]++;
+        count++;
+    }
+    if (count === 0) return;
+
+    const percentile = (h: Uint32Array, p: number): number => {
+        const target = count * p;
+        let acc = 0;
+        for (let v = 0; v < 256; v++) {
+            acc += h[v];
+            if (acc >= target) return v;
+        }
+        return 255;
+    };
+
+    const lo = hist.map(h => percentile(h, 0.01));
+    const hi = hist.map(h => percentile(h, 0.99));
+    const gain = lo.map((low, i) => 255 / Math.max(1, hi[i] - low));
+    const s = Math.max(0, Math.min(1, strength));
+    const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+
+    for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] < 128) continue;
+        for (let c = 0; c < 3; c++) {
+            const original = data[i + c];
+            const stretched = (original - lo[c]) * gain[c];
+            data[i + c] = clamp(original + (stretched - original) * s);
+        }
+    }
+}
+
+
 // --- 核心像素化计算逻辑 ---
 
 // 主导色模式的自适应参数：把 RGB 粗量化分桶，判断该格是「平涂色块」还是「连续色调」。
@@ -250,7 +299,8 @@ export function calculatePixelGrid(
     M: number,
     palette: PaletteColor[],
     mode: PixelationMode,
-    t1FallbackColor: PaletteColor // 传入备用色
+    t1FallbackColor: PaletteColor, // 传入备用色
+    enhance: boolean = false // 是否先做自动色阶（照片增强）
 ): MappedPixel[][] {
     console.log(`Calculating pixel grid with mode: ${mode}`);
     const mappedData: MappedPixel[][] = Array(M).fill(null).map(() => Array(N).fill({ key: t1FallbackColor.key, color: t1FallbackColor.hex }));
@@ -264,6 +314,10 @@ export function calculatePixelGrid(
         console.error("Failed to get full image data:", e);
         // 如果无法获取图像数据，返回一个空的或默认的网格
         return mappedData;
+    }
+
+    if (enhance && fullImageData) {
+        applyAutoLevels(fullImageData);
     }
 
     for (let j = 0; j < M; j++) {

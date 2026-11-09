@@ -105,6 +105,8 @@ export default function Home() {
   // 导致大面积串色。8 只合并肉眼几乎不可分辨的近邻色。
   const [similarityThreshold, setSimilarityThreshold] = useState<number>(8);
   const [similarityThresholdInput, setSimilarityThresholdInput] = useState<string>("8");
+  // 照片增强：室内照片常整体偏灰偏暗，先做自动色阶还原主体固有色。
+  const [photoEnhance, setPhotoEnhance] = useState<boolean>(true);
   // 添加像素化模式状态
   const [pixelationMode, setPixelationMode] = useState<PixelationMode>(PixelationMode.Dominant); // 默认为卡通模式
   
@@ -817,7 +819,7 @@ export default function Home() {
   };
 
   // 修改pixelateImage函数接收模式参数
-  const pixelateImage = (imageSrc: string, detailLevel: number, threshold: number, currentPalette: PaletteColor[], mode: PixelationMode) => {
+  const pixelateImage = (imageSrc: string, detailLevel: number, threshold: number, currentPalette: PaletteColor[], mode: PixelationMode, enhance: boolean) => {
     console.log(`Attempting to pixelate with detail: ${detailLevel}, threshold: ${threshold}, mode: ${mode}`);
     const originalCanvas = originalCanvasRef.current;
     const pixelatedCanvas = pixelatedCanvasRef.current;
@@ -910,7 +912,8 @@ export default function Home() {
           M,
           currentPalette, 
           mode,
-          t1FallbackColor
+          t1FallbackColor,
+          enhance
       );
       console.log(`Initial data mapping complete using mode ${mode}. Starting global color merging...`);
 
@@ -1046,7 +1049,7 @@ export default function Home() {
        const timeoutId = setTimeout(() => {
          if (originalImageSrc && originalCanvasRef.current && pixelatedCanvasRef.current && activeBeadPalette.length > 0) {
            console.log("useEffect triggered: Processing image due to src, granularity, threshold, palette selection, mode or remap trigger.");
-           pixelateImage(originalImageSrc, granularity, similarityThreshold, activeBeadPalette, pixelationMode);
+           pixelateImage(originalImageSrc, granularity, similarityThreshold, activeBeadPalette, pixelationMode, photoEnhance);
          } else {
             console.warn("useEffect check failed inside timeout: Refs or active palette not ready/empty.");
          }
@@ -1071,7 +1074,7 @@ export default function Home() {
         // setTotalBeadCount(0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [originalImageSrc, granularity, similarityThreshold, customPaletteSelections, pixelationMode, remapTrigger]);
+  }, [originalImageSrc, granularity, similarityThreshold, customPaletteSelections, pixelationMode, photoEnhance, remapTrigger]);
 
   // 确保文件输入框引用在组件挂载后正确设置
   useEffect(() => {
@@ -2321,6 +2324,15 @@ export default function Home() {
                   >
                     回撤上一步
                   </button>
+                  <label className="inline-flex items-center gap-1.5 h-9 px-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={photoEnhance}
+                      onChange={(e) => setPhotoEnhance(e.target.checked)}
+                      className="w-4 h-4 accent-blue-500"
+                    />
+                    照片增强（修正偏灰）
+                  </label>
                 </div>
 
                 {/* Pixelation Mode Selector */}
