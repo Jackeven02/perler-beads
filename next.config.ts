@@ -23,10 +23,12 @@ const withPWA = require("next-pwa")({
 
 const pagesBasePath = process.env.PAGES_BASE_PATH || "";
 
+// GitHub Pages 需要纯静态产物；WorkBuddy / 本地 Node 服务仍走标准 Next.js 构建。
+// 用是否注入 PAGES_BASE_PATH 区分两种部署目标，避免 output:export 与 next start 冲突。
 const nextConfig: NextConfig = {
-  output: "export",
-  basePath: pagesBasePath,
-  trailingSlash: true,
+  ...(pagesBasePath
+    ? { output: "export" as const, basePath: pagesBasePath, trailingSlash: true }
+    : {}),
   images: {
     unoptimized: true,
   },

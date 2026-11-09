@@ -101,8 +101,10 @@ export default function Home() {
   const [originalImageSrc, setOriginalImageSrc] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<number>(50);
   const [granularityInput, setGranularityInput] = useState<string>("50");
-  const [similarityThreshold, setSimilarityThreshold] = useState<number>(30);
-  const [similarityThresholdInput, setSimilarityThresholdInput] = useState<string>("30");
+  // 阈值单位是 Oklab 距离 x100。旧默认值 30 会把色板中约 2/3 的颜色对判为"相似"，
+  // 导致大面积串色。8 只合并肉眼几乎不可分辨的近邻色。
+  const [similarityThreshold, setSimilarityThreshold] = useState<number>(8);
+  const [similarityThresholdInput, setSimilarityThresholdInput] = useState<string>("8");
   // 添加像素化模式状态
   const [pixelationMode, setPixelationMode] = useState<PixelationMode>(PixelationMode.Dominant); // 默认为卡通模式
   
@@ -945,69 +947,52 @@ export default function Home() {
           row.map(cell => ({ ...cell, isExternal: cell.isExternal ?? false }))
       );
       
-      // 5. 处理相似颜色合并
+      // 5. 相似颜色合并：低频色只合并到「频率更高且感知距离最近」的保留色。
+      //    旧逻辑按频率从高到低"先到先得"，约 17% 的替换会落到明显更远的颜色上，造成串色。
       const similarityThresholdValue = threshold;
-      
-      // 已被合并（替换）的颜色集合
       const replacedColors = new Set<string>();
-      
-      // 对每个颜色按频率从高到低处理
-      for (let i = 0; i < colorsByFrequency.length; i++) {
-          const currentKey = colorsByFrequency[i];
-          
-          // 如果当前颜色已经被合并到更频繁的颜色中，跳过
-          if (replacedColors.has(currentKey)) continue;
-          
-          const currentRgb = keyToRgbMap.get(currentKey);
-          if (!currentRgb) {
-              console.warn(`RGB not found for key ${currentKey}. Skipping.`);
-              continue;
+      const replacementOf = new Map<string, string>();
+
+      for (let j = colorsByFrequency.length - 1; j >= 0; j--) {
+          const lowKey = colorsByFrequency[j];
+          const lowRgb = keyToRgbMap.get(lowKey);
+          if (!lowRgb) continue;
+
+          let bestKey: string | null = null;
+          let bestDistance = Infinity;
+          for (let i = 0; i < j; i++) {
+              const highKey = colorsByFrequency[i];
+              if (replacedColors.has(highKey)) continue;
+              const highRgb = keyToRgbMap.get(highKey);
+              if (!highRgb) continue;
+              const d = colorDistance(lowRgb, highRgb);
+              if (d < bestDistance) {
+                  bestDistance = d;
+                  bestKey = highKey;
+              }
           }
-          
-          // 检查剩余的低频颜色
-          for (let j = i + 1; j < colorsByFrequency.length; j++) {
-              const lowerFreqKey = colorsByFrequency[j];
-              
-              // 如果低频颜色已被替换，跳过
-              if (replacedColors.has(lowerFreqKey)) continue;
-              
-              const lowerFreqRgb = keyToRgbMap.get(lowerFreqKey);
-              if (!lowerFreqRgb) {
-                  console.warn(`RGB not found for key ${lowerFreqKey}. Skipping.`);
-                  continue;
-              }
-              
-              // 计算颜色距离
-              const dist = colorDistance(currentRgb, lowerFreqRgb);
-              
-              // 如果距离小于阈值，将低频颜色替换为高频颜色
-              if (dist < similarityThresholdValue) {
-                  console.log(`Merging color ${lowerFreqKey} into ${currentKey} (Distance: ${dist.toFixed(2)})`);
-                  
-                  // 标记这个颜色已被替换
-                  replacedColors.add(lowerFreqKey);
-                  
-                  // 替换所有使用这个低频颜色的单元格
-                  for (let r = 0; r < M; r++) {
-                      for (let c = 0; c < N; c++) {
-                          if (mergedData[r][c].key === lowerFreqKey) {
-                              const colorData = keyToColorDataMap.get(currentKey);
-                              if (colorData) {
-                                  mergedData[r][c] = {
-                                      key: currentKey,
-                                      color: colorData.hex,
-                                      isExternal: false
-                                  };
-                              }
-                          }
-                      }
-                  }
-              }
+
+          if (bestKey && bestDistance < similarityThresholdValue) {
+              replacedColors.add(lowKey);
+              replacementOf.set(lowKey, bestKey);
           }
       }
-      
-      if (replacedColors.size > 0) {
-          console.log(`Merged ${replacedColors.size} less frequent similar colors into more frequent ones.`);
+
+      if (replacementOf.size > 0) {
+          for (let r = 0; r < M; r++) {
+              for (let c = 0; c < N; c++) {
+                  const targetKey = replacementOf.get(mergedData[r][c].key);
+                  if (!targetKey) continue;
+                  const colorData = keyToColorDataMap.get(targetKey);
+                  if (!colorData) continue;
+                  mergedData[r][c] = {
+                      key: targetKey,
+                      color: colorData.hex,
+                      isExternal: false
+                  };
+              }
+          }
+          console.log(`Merged ${replacementOf.size} less frequent colors into their nearest more-frequent color.`);
       } else {
           console.log("No colors were similar enough to merge.");
       }
@@ -2299,6 +2284,7 @@ export default function Home() {
                     <label htmlFor="similarityThresholdInput" className="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">
                         颜色合并阈值 (0-100):
                     </label>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 -mt-1 mb-1.5">数值越大越容易串色，建议 0-12；设为 0 可关闭合并</p>
                     <div className="flex items-center gap-2">
                       {/* Input field styles */}
                       <input

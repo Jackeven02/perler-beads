@@ -127,6 +127,19 @@ export function findClosestPaletteColor(
 
 // --- 核心像素化计算逻辑 ---
 
+// 主导色模式的自适应参数：把 RGB 粗量化分桶，判断该格是「平涂色块」还是「连续色调」。
+// 平涂色块用桶内均值（避免边界被平均成灰边）；连续色调退化为全格平均（避免精确众数
+// 在照片/渐变/JPEG 噪点上退化成"随机挑一个像素"）。
+const DOMINANT_BUCKET_SHIFT = 3; // 每通道量化到 32 级
+const DOMINANT_PURITY_RATIO = 0.45; // 最高票桶占比达到此值才算平涂
+
+interface ColorBucket {
+    count: number;
+    r: number;
+    g: number;
+    b: number;
+}
+
 /**
  * 计算图像指定区域的代表色（根据所选模式）
  * @param imageData 包含像素数据的 ImageData 对象
@@ -149,8 +162,8 @@ function calculateCellRepresentativeColor(
     const imgWidth = imageData.width;
     let rSum = 0, gSum = 0, bSum = 0;
     let pixelCount = 0;
-    const colorCountsInCell: { [key: string]: number } = {};
-    let dominantColorRgb: RgbColor | null = null;
+    const buckets = new Map<string, ColorBucket>();
+    let dominantBucket: ColorBucket | null = null;
     let maxCount = 0;
 
     const endX = startX + width;
@@ -167,17 +180,24 @@ function calculateCellRepresentativeColor(
             const b = data[index + 2];
 
             pixelCount++;
+            rSum += r;
+            gSum += g;
+            bSum += b;
 
-            if (mode === PixelationMode.Average) {
-                rSum += r;
-                gSum += g;
-                bSum += b;
-            } else { // Dominant mode
-                const colorKey = `${r},${g},${b}`;
-                colorCountsInCell[colorKey] = (colorCountsInCell[colorKey] || 0) + 1;
-                if (colorCountsInCell[colorKey] > maxCount) {
-                    maxCount = colorCountsInCell[colorKey];
-                    dominantColorRgb = { r, g, b };
+            if (mode === PixelationMode.Dominant) {
+                const bucketKey = `${r >> DOMINANT_BUCKET_SHIFT},${g >> DOMINANT_BUCKET_SHIFT},${b >> DOMINANT_BUCKET_SHIFT}`;
+                let bucket = buckets.get(bucketKey);
+                if (!bucket) {
+                    bucket = { count: 0, r: 0, g: 0, b: 0 };
+                    buckets.set(bucketKey, bucket);
+                }
+                bucket.count++;
+                bucket.r += r;
+                bucket.g += g;
+                bucket.b += b;
+                if (bucket.count > maxCount) {
+                    maxCount = bucket.count;
+                    dominantBucket = bucket;
                 }
             }
         }
@@ -187,15 +207,27 @@ function calculateCellRepresentativeColor(
         return null; // 区域内没有不透明像素
     }
 
+    const averageColor: RgbColor = {
+        r: Math.round(rSum / pixelCount),
+        g: Math.round(gSum / pixelCount),
+        b: Math.round(bSum / pixelCount),
+    };
+
     if (mode === PixelationMode.Average) {
-        return {
-            r: Math.round(rSum / pixelCount),
-            g: Math.round(gSum / pixelCount),
-            b: Math.round(bSum / pixelCount),
-        };
-    } else { // Dominant mode
-        return dominantColorRgb; // 可能为 null 如果只有一个透明像素
+        return averageColor;
     }
+
+    // 平涂色块：用最高票桶内的均值，保留纯色边界
+    if (dominantBucket && maxCount / pixelCount >= DOMINANT_PURITY_RATIO) {
+        return {
+            r: Math.round(dominantBucket.r / dominantBucket.count),
+            g: Math.round(dominantBucket.g / dominantBucket.count),
+            b: Math.round(dominantBucket.b / dominantBucket.count),
+        };
+    }
+
+    // 连续色调（照片 / 渐变 / 压缩噪点）：退化为全格平均，避免众数退化成随机像素
+    return averageColor;
 }
 
 /**
